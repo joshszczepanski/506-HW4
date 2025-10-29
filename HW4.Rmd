@@ -1,0 +1,56 @@
+---
+title: "506-HW4"
+output: html_document
+date: "2025-10-29"
+---
+
+```{r}
+
+# Install and load packages
+# install.packages("nzelect")
+
+library(nzelect)
+library(tidyverse)
+
+# Load dataset
+data("nzge")
+glimpse(nzge)
+
+vote_count_tbl <- nzge %>%
+  group_by(election_year, voting_type) %>%         # group by election year and vote type
+  summarise(total_votes = sum(votes, na.rm = TRUE)) %>% 
+  arrange(desc(total_votes))            # sort descending by vote count
+
+vote_count_tbl
+
+candidate_2014_tbl <- nzge %>%
+  filter(election_year == 2014, voting_type == "Candidate") %>%     # focus on 2014 Candidate votes
+  group_by(party) %>%
+  summarise(total_votes = sum(votes, na.rm = TRUE)) %>%
+  mutate(percent = 100 * total_votes / sum(total_votes)) %>%
+  arrange(desc(percent))
+
+candidate_2014_tbl
+
+winners_tbl <- nzge %>%
+  group_by(election_year, voting_type, party) %>%
+  summarise(total_votes = sum(votes, na.rm = TRUE)) %>%
+  group_by(election_year, voting_type) %>%
+  slice_max(order_by = total_votes, n = 1, with_ties = FALSE) %>%  # winner per type per year
+  pivot_wider(names_from = voting_type, values_from = party,
+              names_prefix = "winner_") %>% 
+  arrange(election_year)
+
+winners_tbl
+
+library(knitr)
+kable(vote_count_tbl, caption = "Total Votes per Year and Type")
+kable(candidate_2014_tbl, caption = "2014 Candidate Vote Share by Party")
+kable(winners_tbl, caption = "Winning Party per Year by Vote Type")
+
+
+
+
+
+
+```
