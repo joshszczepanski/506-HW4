@@ -6,51 +6,243 @@ date: "2025-10-29"
 
 ```{r}
 
-# Install and load packages
-# install.packages("nzelect")
-
+# ---- Load Packages ----
 library(nzelect)
 library(tidyverse)
+library(infer)
 
-# Load dataset
+# 1)
+
+# Load NZ General Election data
 data("nzge")
 glimpse(nzge)
 
-vote_count_tbl <- nzge %>%
-  group_by(election_year, voting_type) %>%         # group by election year and vote type
-  summarise(total_votes = sum(votes, na.rm = TRUE)) %>% 
-  arrange(desc(total_votes))            # sort descending by vote count
+# 1A) Total votes by election year and voting type
+nz_vote_summary <- nzge %>%
+  group_by(election_year, voting_type) %>%
+  summarise(total_votes = sum(votes, na.rm = TRUE)) %>%
+  arrange(desc(total_votes))   # descending order for readability
 
-vote_count_tbl
+nz_vote_summary
 
-candidate_2014_tbl <- nzge %>%
-  filter(election_year == 2014, voting_type == "Candidate") %>%     # focus on 2014 Candidate votes
+# 1B) 2014 Candidate votes by party (percentage of total)
+nz_2014_candidate_summary <- nzge %>%
+  filter(election_year == 2014, voting_type == "Candidate") %>%
   group_by(party) %>%
   summarise(total_votes = sum(votes, na.rm = TRUE)) %>%
-  mutate(percent = 100 * total_votes / sum(total_votes)) %>%
-  arrange(desc(percent))
+  mutate(percent_share = 100 * total_votes / sum(total_votes)) %>%
+  arrange(desc(percent_share))
 
-candidate_2014_tbl
+nz_2014_candidate_summary
 
-winners_tbl <- nzge %>%
+# Attribution of Sources Note: Used Chat GPT to help me identify slice and pivot functions in tidyverse
+
+# 1C) Identify winners (by vote type and year)
+nz_winners_by_year <- nzge %>%
   group_by(election_year, voting_type, party) %>%
   summarise(total_votes = sum(votes, na.rm = TRUE)) %>%
   group_by(election_year, voting_type) %>%
-  slice_max(order_by = total_votes, n = 1, with_ties = FALSE) %>%  # winner per type per year
-  pivot_wider(names_from = voting_type, values_from = party,
-              names_prefix = "winner_") %>% 
+  slice_max(order_by = total_votes, n = 1, with_ties = FALSE) %>%
+  pivot_wider(
+    names_from = voting_type,
+    values_from = party,
+    names_prefix = "winner_"
+  ) %>%
   arrange(election_year)
 
-winners_tbl
+nz_winners_by_year
 
-library(knitr)
-kable(vote_count_tbl, caption = "Total Votes per Year and Type")
-kable(candidate_2014_tbl, caption = "2014 Candidate Vote Share by Party")
-kable(winners_tbl, caption = "Winning Party per Year by Vote Type")
+# 2)
+
+# Load ATP match data
+atp_2019 <- read_csv("https://raw.githubusercontent.com/JeffSackmann/tennis_atp/refs/heads/master/atp_matches_2019.csv")
+
+glimpse(atp_2019)
+
+# 2A) Number of unique tournaments held
+num_tournaments_2019 <- atp_2019 %>%
+  distinct(tourney_id, tourney_name) %>%
+  nrow()
+
+num_tournaments_2019
+
+# 128 Tournaments took place in 2018
+
+# 2B) Identify tournament winners (Final round = "F")
+tourney_winner_tbl <- atp_2019 %>%
+  group_by(tourney_id, tourney_name) %>%
+  filter(round == "F") %>%
+  summarise(winner = first(winner_name), .groups = "drop")
+
+# Count tournaments won per player
+player_title_counts <- tourney_winner_tbl %>%
+  count(winner, sort = TRUE)
+
+player_title_counts
+
+# Number of players who won multiple tournaments
+multi_title_players <- player_title_counts %>%
+  filter(n > 1) %>%
+  nrow()
+
+# Max number of titles by a single player
+max_titles <- max(player_title_counts$n)
+
+cat(multi_title_players, 
+    "players won multiple tournaments, and Dominic Thiem won the most with",
+    max_titles, "titles.\n")
+
+# 2C) Hypothesis test: Do winners serve more aces?
+aces_long_tbl <- atp_2019 %>%
+  select(w_ace, l_ace) %>%
+  pivot_longer(cols = everything(), names_to = "match_result", values_to = "aces") %>%
+  mutate(match_result = if_else(match_result == "w_ace", "Winner", "Loser"))
+
+# Observed difference in mean aces (Winner − Loser)
+obs_diff_aces <- aces_long_tbl %>%
+  group_by(match_result) %>%
+  summarise(mean_aces = mean(aces, na.rm = TRUE)) %>%
+  summarise(diff = diff(mean_aces)) %>%
+  pull(diff)
+
+obs_diff_aces
+
+# Permutation test for difference in means
+set.seed(123)
+
+perm_test_aces <- aces_long_tbl %>%
+  specify(aces ~ match_result) %>%
+  hypothesize(null = "independence") %>%
+  generate(reps = 2000, type = "permute") %>%
+  calculate(stat = "diff in means", order = c("Winner", "Loser"))
+
+p_val_aces <- perm_test_aces %>%
+  get_p_value(obs_stat = obs_diff_aces, direction = "greater")
+
+p_val_aces
+
+if (p_val_aces$p_value == 0) {
+  cat("p-value < ", 1/2000, "\n")
+}
+
+# Interpretation:
+# Winners have significantly higher ace counts (p < 0.05).
+
+# 2D) Player win rates
+player_win_rates <- atp_2019 %>%
+  select(winner_name, loser_name) %>%
+  pivot_longer(cols = everything(), names_to = "result", values_to = "player") %>%
+  mutate(win_flag = if_else(result == "winner_name", 1, 0)) %>%
+  group_by(player) %>%
+  summarise(
+    matches_played = n(),
+    wins = sum(win_flag),
+    win_rate = wins / matches_played
+  ) %>%
+  filter(matches_played >= 5) %>%
+  arrange(desc(win_rate))
+
+player_win_rates
+
+# Top-performing player
+top_player_record <- player_win_rates %>% slice_max(win_rate, n = 1)
+cat(top_player_record$player, "had the highest win rate of",
+    round(top_player_record$win_rate, 3), "\n")
 
 
 
+# 3)
+
+covid_us <- read_csv("https://raw.githubusercontent.com/nytimes/covid-19-data/refs/heads/master/rolling-averages/us-states.csv")
+glimpse(covid_us)
+
+# 3A) Aggregate total national average cases
+covid_us_total <- covid_us %>%
+  group_by(date) %>%
+  summarise(us_cases_avg = sum(cases_avg, na.rm = TRUE))
+
+# Plot U.S. major/minor spikes
+ggplot(covid_us_total, aes(x = date, y = us_cases_avg)) +
+  geom_line(color = "brown", linewidth = 1) +
+  geom_smooth(span = 0.15, se = FALSE, color = "limegreen", linewidth = 1) +
+  labs(
+    title = "Major and Minor Spikes in U.S. COVID-19 Cases (7-Day Avg)",
+    x = "Date", y = "Average Daily Cases",
+    caption = "Data: NY Times COVID-19 dataset | Visualization: tidyverse"
+  ) +
+  theme_minimal(base_size = 13)
+
+# There were 2 major spikes and about 6 additional minor spikes 
 
 
+# 3B) Compare high vs. low case-rate states
+state_mean_rate_tbl <- covid_us %>%
+  group_by(state) %>%
+  summarise(mean_rate = mean(cases_avg_per_100k, na.rm = TRUE)) %>%
+  arrange(desc(mean_rate))
 
+# Top and bottom 3 states by average rate
+high_states <- state_mean_rate_tbl %>% slice_head(n = 3) %>% pull(state)
+low_states  <- state_mean_rate_tbl %>% slice_tail(n = 3) %>% pull(state)
+
+# Subset for comparison plot
+compare_state_subset <- covid_us %>%
+  filter(state %in% c(high_states, low_states))
+
+ggplot(compare_state_subset, aes(x = date, y = cases_avg_per_100k, color = state)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "States with Highest vs. Lowest COVID-19 Case Rates (per 100,000)",
+    x = "Date", y = "Cases per 100,000 (7-Day Avg)",
+    caption = "Data: NY Times COVID-19 dataset"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom") +
+  scale_color_brewer(palette = "Set1")
+
+# Overall, states with higher rates experienced more frequent, volatile spikes, while lower-rate states had muted and delayed waves, highlighting geographic and policy-driven differences in pandemic trajectory across the U.S.
+
+# 3C) Identify earliest states with substantial case levels (≥ 100 avg cases/day)
+# 3C) Identify earliest states with substantial case levels (≥ 100 avg cases/day)
+early_covid_wave <- covid_us %>%
+  filter(cases_avg >= 100) %>%
+  group_by(state) %>%
+  summarise(first_substantial_date = min(date)) %>%
+  arrange(first_substantial_date)
+
+# Display first 5 states to reach ≥100 avg cases/day
+early_covid_wave %>%
+  slice_head(n = 5)
+
+# Attribution of Sources Note: Used Chat GPT to help me consolidate the info down to before July 2020, because we are focused on the beginning. Also had it help me get the chart nicely colored.
+
+
+ggplot(covid_us %>% filter(date < as.Date("2020-06-30")),  # focus on early 2020
+       aes(x = date, y = cases_avg, group = state)) +
+  geom_line(color = "gray70", alpha = 0.4) +
+  # highlight the first 5 states
+  geom_line(
+    data = covid_us %>%
+      filter(state %in% early_covid_wave$state[1:5],
+             date < as.Date("2020-06-30")),
+    aes(color = state),
+    linewidth = 1
+  ) +
+  labs(
+    title = "Early COVID-19 Spread in the U.S. (Jan–Jun 2020)",
+    subtitle = "Highlighting the first five states to reach ≥ 100 average daily cases",
+    x = "Date", y = "Daily Cases (7-Day Avg)",
+    caption = "Data: NY Times COVID-19 dataset | Visualization: tidyverse"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 11, color = "gray30")
+  ) +
+  scale_color_brewer(palette = "Dark2")
+
+
+# By highlighting the first 5 states to reach 100 avg cases per day, it is easy to see that the first five states to experience covid in a substanctial way were Michigan, California, New Jersey, New York, and Washington.  
 ```
+
